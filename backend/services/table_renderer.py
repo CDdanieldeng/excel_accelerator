@@ -222,24 +222,28 @@ class TableImageRenderer:
 
     def __init__(
         self,
-        row_height_px: int = 22,
-        col_width_px: int = 90,
-        font_size: int = 12,
-        padding_px: int = 4,
+        row_height_px: int = 44,  # Increased for higher resolution (was 22)
+        col_width_px: int = 180,  # Increased for higher resolution (was 90)
+        font_size: int = 24,  # Increased for higher resolution (was 12)
+        padding_px: int = 8,  # Increased for higher resolution (was 4)
+        scale_factor: float = 2.0,  # Scale factor for high DPI rendering
     ) -> None:
         """
         Initialize the table image renderer.
 
         Args:
-            row_height_px: Height of each row in pixels
-            col_width_px: Width of each column in pixels
-            font_size: Font size for text
-            padding_px: Padding inside each cell
+            row_height_px: Height of each row in pixels (base size, will be scaled)
+            col_width_px: Width of each column in pixels (base size, will be scaled)
+            font_size: Font size for text (base size, will be scaled)
+            padding_px: Padding inside each cell (base size, will be scaled)
+            scale_factor: Scale factor for high DPI rendering (default 2.0 for 2x resolution)
         """
-        self.row_height_px = row_height_px
-        self.col_width_px = col_width_px
-        self.font_size = font_size
-        self.padding_px = padding_px
+        self.scale_factor = scale_factor
+        # Apply scale factor to all dimensions
+        self.row_height_px = int(row_height_px * scale_factor)
+        self.col_width_px = int(col_width_px * scale_factor)
+        self.font_size = int(font_size * scale_factor)
+        self.padding_px = int(padding_px * scale_factor)
 
         # Try to load a font that supports Chinese characters (UTF-8)
         # Priority: Chinese fonts > system fonts > default
@@ -256,14 +260,14 @@ class TableImageRenderer:
         
         for font_path, font_index in chinese_font_paths:
             try:
-                self.font = ImageFont.truetype(font_path, font_size, index=font_index)
-                logger.info(f"Loaded Chinese font: {font_path}")
+                self.font = ImageFont.truetype(font_path, self.font_size, index=font_index)
+                logger.info(f"Loaded Chinese font: {font_path} at size {self.font_size}")
                 break
             except (OSError, IOError, TypeError):
                 # TypeError may occur if index parameter is not supported
                 try:
-                    self.font = ImageFont.truetype(font_path, font_size)
-                    logger.info(f"Loaded Chinese font: {font_path}")
+                    self.font = ImageFont.truetype(font_path, self.font_size)
+                    logger.info(f"Loaded Chinese font: {font_path} at size {self.font_size}")
                     break
                 except (OSError, IOError):
                     continue
@@ -280,8 +284,8 @@ class TableImageRenderer:
             
             for font_path in system_font_paths:
                 try:
-                    self.font = ImageFont.truetype(font_path, font_size)
-                    logger.info(f"Loaded system font: {font_path}")
+                    self.font = ImageFont.truetype(font_path, self.font_size)
+                    logger.info(f"Loaded system font: {font_path} at size {self.font_size}")
                     break
                 except (OSError, IOError):
                     continue
@@ -290,6 +294,92 @@ class TableImageRenderer:
         if self.font is None:
             logger.warning("Could not load custom font, using default (may not support Chinese)")
             self.font = ImageFont.load_default()
+
+    def _truncate_text_to_fit(
+        self,
+        text: str,
+        available_width: int,
+        draw: ImageDraw.Draw,
+    ) -> str:
+        """
+        Truncate text to fit within available width, adding ellipsis if needed.
+
+        Args:
+            text: Text to truncate
+            available_width: Available width in pixels
+            draw: ImageDraw object for measuring text
+
+        Returns:
+            Truncated text with ellipsis if needed
+        """
+        if not text:
+            return ""
+
+        # Measure ellipsis width
+        ellipsis = "…"
+        try:
+            ellipsis_bbox = draw.textbbox((0, 0), ellipsis, font=self.font)
+            ellipsis_width = ellipsis_bbox[2] - ellipsis_bbox[0]
+        except Exception:
+            ellipsis = "..."
+            ellipsis_bbox = draw.textbbox((0, 0), ellipsis, font=self.font)
+            ellipsis_width = ellipsis_bbox[2] - ellipsis_bbox[0]
+
+        # If ellipsis itself doesn't fit, return it anyway
+        if ellipsis_width >= available_width:
+            return ellipsis
+
+        # Measure full text width
+        try:
+            full_bbox = draw.textbbox((0, 0), text, font=self.font)
+            full_width = full_bbox[2] - full_bbox[0]
+        except Exception:
+            # If measurement fails, use character count as fallback
+            max_chars = max(1, available_width // (self.font_size // 2))
+            if len(text) > max_chars:
+                return text[:max_chars] + ellipsis
+            return text
+
+        # If text fits, return as is
+        if full_width <= available_width:
+            return text
+
+        # Binary search for the right truncation point
+        # Start with approximate truncation based on width ratio
+        approx_chars = max(1, int(len(text) * (available_width - ellipsis_width) / full_width))
+        low = 0
+        high = len(text)
+        best_length = 0
+
+        # Binary search to find maximum length that fits
+        while low <= high:
+            mid = (low + high) // 2
+            if mid == 0:
+                break
+            
+            truncated = text[:mid]
+            try:
+                bbox = draw.textbbox((0, 0), truncated, font=self.font)
+                width = bbox[2] - bbox[0]
+                total_width = width + ellipsis_width
+                
+                if total_width <= available_width:
+                    # This length fits, try longer
+                    best_length = mid
+                    low = mid + 1
+                else:
+                    # Too long, try shorter
+                    high = mid - 1
+            except Exception:
+                # If measurement fails, use character count approximation
+                high = mid - 1
+                continue
+
+        # If no length fits, return ellipsis only
+        if best_length == 0:
+            return ellipsis
+
+        return text[:best_length] + ellipsis
 
     def render_grid(
         self,
@@ -325,11 +415,12 @@ class TableImageRenderer:
 
         logger.info(
             f"Rendering grid: {rows} rows x {cols} cols, "
-            f"image size: {width}x{height} pixels"
+            f"image size: {width}x{height} pixels (scale: {self.scale_factor}x)"
         )
 
-        # Create image
+        # Create high-resolution image
         image = Image.new("RGB", (width, height), color="white")
+        # Use standard RGB mode for drawing (RGBA mode has issues with some operations)
         draw = ImageDraw.Draw(image)
 
         # Draw grid lines and content
@@ -340,8 +431,9 @@ class TableImageRenderer:
                 x2 = x1 + self.col_width_px
                 y2 = y1 + self.row_height_px
 
-                # Draw cell border
-                draw.rectangle([x1, y1, x2 - 1, y2 - 1], outline="gray", width=1)
+                # Draw cell border (thicker for high resolution)
+                border_width = max(1, int(self.scale_factor))
+                draw.rectangle([x1, y1, x2 - 1, y2 - 1], outline="gray", width=border_width)
 
                 # Determine cell content
                 if row_idx == 0:
@@ -374,16 +466,17 @@ class TableImageRenderer:
                     else:
                         text = ""
 
-                # Truncate text if too long (count by character, not bytes)
-                max_chars = 15
-                if len(text) > max_chars:
-                    text = text[:max_chars] + "..."
-
-                # Draw text (centered)
+                # Truncate text to fit cell width before rendering
                 if text:
+                    # Calculate available width (cell width minus padding on both sides)
+                    available_width = self.col_width_px - (self.padding_px * 2)
+                    
+                    # Truncate text to fit available width
+                    truncated_text = self._truncate_text_to_fit(text, available_width, draw)
+                    
                     try:
-                        # Get text bounding box
-                        bbox = draw.textbbox((0, 0), text, font=self.font)
+                        # Get text bounding box for truncated text
+                        bbox = draw.textbbox((0, 0), truncated_text, font=self.font)
                         text_width = bbox[2] - bbox[0]
                         text_height = bbox[3] - bbox[1]
 
@@ -391,24 +484,32 @@ class TableImageRenderer:
                         text_x = x1 + (self.col_width_px - text_width) / 2
                         text_y = y1 + (self.row_height_px - text_height) / 2
 
-                        # Draw text (Pillow automatically handles UTF-8 if font supports it)
+                        # Draw truncated text
                         draw.text(
                             (text_x, text_y),
-                            text,
+                            truncated_text,
                             fill="black",
                             font=self.font,
                         )
                     except Exception as e:
                         # If text rendering fails, log and skip
-                        logger.warning(f"Failed to render text '{text[:20]}...': {e}")
+                        logger.warning(f"Failed to render text '{truncated_text[:20]}...': {e}")
 
-        # Convert to PNG bytes
+        # Convert to PNG bytes with high quality settings
         png_buffer = BytesIO()
-        image.save(png_buffer, format="PNG")
+        # Save with optimization level 0 (no compression) for maximum quality
+        # Higher compression levels can reduce quality slightly
+        image.save(
+            png_buffer,
+            format="PNG",
+            optimize=False,  # Disable optimization for faster saving
+            compress_level=1,  # Low compression for better quality
+        )
         png_bytes = png_buffer.getvalue()
         png_buffer.close()
 
-        logger.info(f"Rendered PNG: {len(png_bytes)} bytes")
+        logger.info(f"Rendered PNG: {len(png_bytes)} bytes at {width}x{height} resolution")
 
+        # Return the actual pixel dimensions used (scaled)
         return (png_bytes, self.row_height_px, self.col_width_px)
 
