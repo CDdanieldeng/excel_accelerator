@@ -1,20 +1,33 @@
 """FastAPI main application for Excel/CSV table header detection."""
 
+import base64
 import logging
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, Tuple
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend import config
 from backend.logging_config import request_id_context, setup_logging, get_logger
-from backend.models.schemas import ErrorDetail, ErrorResponse, GuessTableResponse
+from backend.models.schemas import (
+    ErrorDetail,
+    ErrorResponse,
+    GuessTableResponse,
+    SheetImageResponse,
+    SheetListResponse,
+)
 from backend.services.file_loader import load_file_sample
-from backend.services.table_detector import TableDetector
+# from backend.services.table_detector import TableDetector  # Commented out for testing sheet image feature
+from backend.services.table_renderer import (
+    TableImageRenderer,
+    UnsupportedFileTypeError,
+    get_sheet_list,
+    load_sheet_window,
+)
 from backend.utils.io_utils import cleanup_temp_file, get_file_size_mb, save_uploaded_file
 
 # Setup logging
@@ -212,30 +225,25 @@ def validate_uploaded_file(
     return file_type, temp_file_path
 
 
-@app.post("/api/guess_table", response_model=GuessTableResponse)
-async def guess_table(
+@app.post("/api/sheet_list", response_model=SheetListResponse)
+async def get_sheet_list_api(
     request: Request,
     file: UploadFile = File(...),
-    max_preview_rows: int = 50,
-    max_scan_rows: int = 200,
-) -> GuessTableResponse:
+) -> SheetListResponse:
     """
-    Analyze uploaded file and detect table headers and data regions.
+    Get list of sheet names from uploaded file.
 
     Args:
         request: FastAPI request object
         file: Uploaded file
-        max_preview_rows: Maximum number of preview rows to return
-        max_scan_rows: Maximum number of rows to scan for detection
 
     Returns:
-        GuessTableResponse with detection results
+        SheetListResponse with file type and list of sheet names
 
     Raises:
         HTTPException: If file processing fails
     """
     request_logger = get_request_logger(request)
-    request_id = request.state.request_id
     temp_file_path: Optional[str] = None
 
     try:
@@ -244,112 +252,385 @@ async def guess_table(
         file_name = file.filename or "unknown"
 
         request_logger.info(
-            f"Received file upload: {file_name}, size={len(file_content)} bytes",
-            extra={"stage": "upload", "file_name": file_name},
+            f"Sheet list request: file_name={file_name}",
+            extra={"stage": "sheet_list", "file_name": file_name},
         )
 
-        # Validate file
+        # Validate and save uploaded file
         file_type, temp_file_path = validate_uploaded_file(file, file_content, request_logger)
 
-        # Load file sample
+        # Get sheet list
         request_logger.info(
-            f"Loading file sample: {file_name}, type={file_type}, max_scan_rows={max_scan_rows}",
-            extra={"stage": "load_sample", "file_name": file_name},
+            f"Getting sheet list: {file_name}",
+            extra={"stage": "get_sheets", "file_name": file_name},
         )
 
-        try:
-            samples = load_file_sample(temp_file_path, file_type, max_scan_rows)
-            request_logger.info(
-                f"Loaded {len(samples)} sheet(s) from file: {file_name}",
-                extra={"stage": "load_sample", "file_name": file_name},
-            )
-        except Exception as e:
-            request_logger.exception(
-                f"Error loading file sample: {file_name}",
-                extra={"stage": "load_sample", "file_name": file_name},
-            )
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "code": "INTERNAL_ERROR",
-                    "message": "解析文件时发生错误，请稍后重试或联系管理员。",
-                },
-            )
-
-        # Detect tables
-        detector = TableDetector()
-        results = []
-
-        for sample in samples:
-            request_logger.info(
-                f"Detecting table in sheet: {sample.name}, rows={len(sample.rows)}",
-                extra={"stage": "detect_header", "file_name": file_name, "sheet_name": sample.name},
-            )
-
-            try:
-                result = detector.detect_sheet(
-                    sample.name,
-                    sample.rows,
-                    max_preview_rows=max_preview_rows,
-                )
-                results.append(result)
-
-                request_logger.info(
-                    f"Sheet {sample.name}: header_row={result.header_row_index}, "
-                    f"data_start={result.data_start_row_index}, "
-                    f"columns={len(result.detected_columns)}",
-                    extra={
-                        "stage": "detect_header",
-                        "file_name": file_name,
-                        "sheet_name": sample.name,
-                    },
-                )
-            except Exception as e:
-                request_logger.exception(
-                    f"Error detecting table in sheet: {sample.name}",
-                    extra={
-                        "stage": "detect_header",
-                        "file_name": file_name,
-                        "sheet_name": sample.name,
-                    },
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail={
-                        "code": "INTERNAL_ERROR",
-                        "message": f"检测表头时发生错误（sheet: {sample.name}），请稍后重试。",
-                    },
-                )
-
-        # Mark main sheet
-        results = detector.mark_main_sheet(results, samples)
-
-        # Build response
-        response = GuessTableResponse(
-            file_name=file_name,
-            file_type=file_type,
-            sheets=results,
-        )
+        _, sheet_names = get_sheet_list(temp_file_path)
 
         request_logger.info(
-            f"Successfully processed file: {file_name}, sheets={len(results)}",
+            f"Found {len(sheet_names)} sheets: {sheet_names}",
             extra={"stage": "complete", "file_name": file_name},
         )
 
-        return response
+        return SheetListResponse(
+            file_type=file_type,
+            sheets=sheet_names,
+        )
 
     except HTTPException:
         raise
+    except UnsupportedFileTypeError as e:
+        request_logger.warning(
+            f"Unsupported file type: {file.filename}, error={str(e)}",
+            extra={"stage": "error", "file_name": file.filename},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "UNSUPPORTED_FILE_TYPE",
+                "message": f"不支持的文件类型: {str(e)}",
+            },
+        )
+
+    except NotImplementedError as e:
+        request_logger.warning(
+            f"Feature not implemented: {file.filename}, error={str(e)}",
+            extra={"stage": "error", "file_name": file.filename},
+        )
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "code": "NOT_IMPLEMENTED",
+                "message": f"功能尚未实现: {str(e)}",
+            },
+        )
+
     except Exception as e:
         request_logger.exception(
-            f"Unexpected error processing file: {file.filename}",
-            extra={"stage": "error", "file_name": file.filename or "unknown"},
+            f"Unexpected error getting sheet list: {file.filename}",
+            extra={"stage": "error", "file_name": file.filename},
         )
         raise HTTPException(
             status_code=500,
             detail={
                 "code": "INTERNAL_ERROR",
-                "message": "处理文件时发生未预期的错误，请稍后重试或联系管理员。",
+                "message": "获取 Sheet 列表时发生错误，请稍后重试。",
+            },
+        )
+    finally:
+        # Cleanup temporary file
+        if temp_file_path:
+            cleanup_temp_file(temp_file_path)
+
+
+# Commented out /api/guess_table endpoint for testing sheet image feature
+# @app.post("/api/guess_table", response_model=GuessTableResponse)
+# async def guess_table(
+#     request: Request,
+#     file: UploadFile = File(...),
+#     max_preview_rows: int = 50,
+#     max_scan_rows: int = 200,
+# ) -> GuessTableResponse:
+#     """
+#     Analyze uploaded file and detect table headers and data regions.
+#
+#     Args:
+#         request: FastAPI request object
+#         file: Uploaded file
+#         max_preview_rows: Maximum number of preview rows to return
+#         max_scan_rows: Maximum number of rows to scan for detection
+#
+#     Returns:
+#         GuessTableResponse with detection results
+#
+#     Raises:
+#         HTTPException: If file processing fails
+#     """
+#     request_logger = get_request_logger(request)
+#     request_id = request.state.request_id
+#     temp_file_path: Optional[str] = None
+#
+#     try:
+#         # Read file content
+#         file_content = await file.read()
+#         file_name = file.filename or "unknown"
+#
+#         request_logger.info(
+#             f"Received file upload: {file_name}, size={len(file_content)} bytes",
+#             extra={"stage": "upload", "file_name": file_name},
+#         )
+#
+#         # Validate file
+#         file_type, temp_file_path = validate_uploaded_file(file, file_content, request_logger)
+#
+#         # Load file sample
+#         request_logger.info(
+#             f"Loading file sample: {file_name}, type={file_type}, max_scan_rows={max_scan_rows}",
+#             extra={"stage": "load_sample", "file_name": file_name},
+#         )
+#
+#         try:
+#             samples = load_file_sample(temp_file_path, file_type, max_scan_rows)
+#             request_logger.info(
+#                 f"Loaded {len(samples)} sheet(s) from file: {file_name}",
+#                 extra={"stage": "load_sample", "file_name": file_name},
+#             )
+#         except Exception as e:
+#             request_logger.exception(
+#                 f"Error loading file sample: {file_name}",
+#                 extra={"stage": "load_sample", "file_name": file_name},
+#             )
+#             raise HTTPException(
+#                 status_code=500,
+#                 detail={
+#                     "code": "INTERNAL_ERROR",
+#                     "message": "解析文件时发生错误，请稍后重试或联系管理员。",
+#                 },
+#             )
+#
+#         # Detect tables
+#         detector = TableDetector()
+#         results = []
+#
+#         for sample in samples:
+#             request_logger.info(
+#                 f"Detecting table in sheet: {sample.name}, rows={len(sample.rows)}",
+#                 extra={"stage": "detect_header", "file_name": file_name, "sheet_name": sample.name},
+#             )
+#
+#             try:
+#                 result = detector.detect_sheet(
+#                     sample.name,
+#                     sample.rows,
+#                     max_preview_rows=max_preview_rows,
+#                 )
+#                 results.append(result)
+#
+#                 request_logger.info(
+#                     f"Sheet {sample.name}: header_row={result.header_row_index}, "
+#                     f"data_start={result.data_start_row_index}, "
+#                     f"columns={len(result.detected_columns)}",
+#                     extra={
+#                         "stage": "detect_header",
+#                         "file_name": file_name,
+#                         "sheet_name": sample.name,
+#                     },
+#                 )
+#             except Exception as e:
+#                 request_logger.exception(
+#                     f"Error detecting table in sheet: {sample.name}",
+#                     extra={
+#                         "stage": "detect_header",
+#                         "file_name": file_name,
+#                         "sheet_name": sample.name,
+#                     },
+#                 )
+#                 raise HTTPException(
+#                     status_code=500,
+#                     detail={
+#                         "code": "INTERNAL_ERROR",
+#                         "message": f"检测表头时发生错误（sheet: {sample.name}），请稍后重试。",
+#                     },
+#                 )
+#
+#         # Mark main sheet
+#         results = detector.mark_main_sheet(results, samples)
+#
+#         # Build response
+#         response = GuessTableResponse(
+#             file_name=file_name,
+#             file_type=file_type,
+#             sheets=results,
+#         )
+#
+#         request_logger.info(
+#             f"Successfully processed file: {file_name}, sheets={len(results)}",
+#             extra={"stage": "complete", "file_name": file_name},
+#         )
+#
+#         return response
+#
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         request_logger.exception(
+#             f"Unexpected error processing file: {file.filename}",
+#             extra={"stage": "error", "file_name": file.filename or "unknown"},
+#         )
+#         raise HTTPException(
+#             status_code=500,
+#             detail={
+#                 "code": "INTERNAL_ERROR",
+#                 "message": "处理文件时发生未预期的错误，请稍后重试或联系管理员。",
+#             },
+#         )
+#     finally:
+#         # Cleanup temporary file
+#         if temp_file_path:
+#             cleanup_temp_file(temp_file_path)
+
+
+@app.post("/api/sheet_image", response_model=SheetImageResponse)
+async def get_sheet_image(
+    request: Request,
+    file: UploadFile = File(...),
+    sheet_name: str = Query(..., description="Sheet name (use '__default__' for CSV)"),
+    row_start: int = Query(..., ge=0, description="0-based start row index (inclusive)"),
+    row_end: int = Query(..., ge=0, description="0-based end row index (inclusive)"),
+    col_start: int = Query(..., ge=0, description="0-based start column index (inclusive)"),
+    col_end: int = Query(..., ge=0, description="0-based end column index (inclusive)"),
+) -> SheetImageResponse:
+    """
+    Render a sheet region as a PNG image.
+
+    Args:
+        request: FastAPI request object
+        file: Uploaded file
+        sheet_name: Name of the sheet
+        row_start: 0-based start row index (inclusive)
+        row_end: 0-based end row index (inclusive)
+        col_start: 0-based start column index (inclusive)
+        col_end: 0-based end column index (inclusive)
+
+    Returns:
+        SheetImageResponse with base64 encoded PNG image and metadata
+
+    Raises:
+        HTTPException: If file processing fails
+    """
+    request_logger = get_request_logger(request)
+    request_id = request.state.request_id
+    temp_file_path: Optional[str] = None
+
+    request_logger.info(
+        f"Sheet image request: file_name={file.filename}, sheet_name={sheet_name}, "
+        f"rows=[{row_start}, {row_end}], cols=[{col_start}, {col_end}]",
+        extra={"stage": "sheet_image", "file_name": file.filename, "sheet_name": sheet_name},
+    )
+
+    # Validate ranges
+    if row_end < row_start:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_RANGE",
+                "message": f"row_end ({row_end}) must be >= row_start ({row_start})",
+            },
+        )
+
+    if col_end < col_start:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_RANGE",
+                "message": f"col_end ({col_end}) must be >= col_start ({col_start})",
+            },
+        )
+
+    try:
+        # Read file content
+        file_content = await file.read()
+        file_name = file.filename or "unknown"
+
+        # Validate and save uploaded file
+        file_type, temp_file_path = validate_uploaded_file(file, file_content, request_logger)
+
+        # Load sheet window
+        request_logger.info(
+            f"Loading sheet window: {file_name}, sheet={sheet_name}",
+            extra={"stage": "load_window", "file_name": file_name, "sheet_name": sheet_name},
+        )
+
+        grid = load_sheet_window(
+            file_path=temp_file_path,
+            sheet_name=sheet_name,
+            row_start=row_start,
+            row_end=row_end,
+            col_start=col_start,
+            col_end=col_end,
+        )
+
+        # Render grid to PNG
+        request_logger.info(
+            f"Rendering grid to PNG: {len(grid)} rows",
+            extra={"stage": "render", "file_name": file_name, "sheet_name": sheet_name},
+        )
+
+        renderer = TableImageRenderer()
+        png_bytes, row_height_px, col_width_px = renderer.render_grid(
+            grid, row_offset=row_start, col_offset=col_start
+        )
+
+        # Encode to base64
+        image_base64 = base64.b64encode(png_bytes).decode("ascii")
+
+        request_logger.info(
+            f"Sheet image rendered successfully: {len(png_bytes)} bytes",
+            extra={"stage": "complete", "file_name": file_name, "sheet_name": sheet_name},
+        )
+
+        return SheetImageResponse(
+            image_base64=image_base64,
+            sheet_name=sheet_name,
+            row_start=row_start,
+            row_end=row_end,
+            col_start=col_start,
+            col_end=col_end,
+            row_height_px=row_height_px,
+            col_width_px=col_width_px,
+        )
+
+    except HTTPException:
+        raise
+    except UnsupportedFileTypeError as e:
+        request_logger.warning(
+            f"Unsupported file type: {file.filename}, error={str(e)}",
+            extra={"stage": "error", "file_name": file.filename},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "UNSUPPORTED_FILE_TYPE",
+                "message": f"不支持的文件类型: {str(e)}",
+            },
+        )
+
+    except NotImplementedError as e:
+        request_logger.warning(
+            f"Feature not implemented: {file.filename}, error={str(e)}",
+            extra={"stage": "error", "file_name": file.filename},
+        )
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "code": "NOT_IMPLEMENTED",
+                "message": f"功能尚未实现: {str(e)}",
+            },
+        )
+
+    except ValueError as e:
+        request_logger.warning(
+            f"Invalid request: {file.filename}, error={str(e)}",
+            extra={"stage": "error", "file_name": file.filename, "sheet_name": sheet_name},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_REQUEST",
+                "message": f"无效的请求: {str(e)}",
+            },
+        )
+
+    except Exception as e:
+        request_logger.exception(
+            f"Unexpected error rendering sheet image: {file.filename}",
+            extra={"stage": "error", "file_name": file.filename, "sheet_name": sheet_name},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "渲染图片时发生错误，请稍后重试。",
             },
         )
     finally:

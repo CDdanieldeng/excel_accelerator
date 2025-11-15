@@ -50,3 +50,23 @@ class ErrorResponse(BaseModel):
 
     detail: ErrorDetail = Field(..., description="Error details")
 
+
+class SheetListResponse(BaseModel):
+    """Response model for sheet list API."""
+
+    file_type: str = Field(..., description="File type (xlsx, csv, xlsb)")
+    sheets: List[str] = Field(..., description="List of sheet names")
+
+
+class SheetImageResponse(BaseModel):
+    """Response model for sheet image rendering API."""
+
+    image_base64: str = Field(..., description="Base64 encoded PNG image")
+    sheet_name: str = Field(..., description="Sheet name")
+    row_start: int = Field(..., description="0-based start row index (inclusive)")
+    row_end: int = Field(..., description="0-based end row index (inclusive)")
+    col_start: int = Field(..., description="0-based start column index (inclusive)")
+    col_end: int = Field(..., description="0-based end column index (inclusive)")
+    row_height_px: int = Field(..., description="Row height in pixels")
+    col_width_px: int = Field(..., description="Column width in pixels")
+

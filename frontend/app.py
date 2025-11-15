@@ -1,7 +1,10 @@
 """Streamlit frontend for Excel/CSV table header detection."""
 
+import base64
+import io
 import requests
 import streamlit as st
+from PIL import Image
 from typing import Optional
 
 # Backend API URL
@@ -141,9 +144,149 @@ def display_sheet_result(sheet_result: dict) -> None:
     st.divider()
 
 
+def call_sheet_list_api(
+    file_content: bytes,
+    file_name: str,
+) -> Optional[dict]:
+    """
+    Call backend API to get sheet list from uploaded file.
+
+    Args:
+        file_content: File content as bytes
+        file_name: File name
+
+    Returns:
+        Response JSON or None if error
+    """
+    try:
+        files = {"file": (file_name, file_content)}
+
+        response = requests.post(
+            f"{BACKEND_URL}/api/sheet_list",
+            files=files,
+            timeout=30,
+        )
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            error_data = response.json()
+            error_detail = error_data.get("detail", {})
+            if isinstance(error_detail, dict):
+                error_code = error_detail.get("code", "UNKNOWN_ERROR")
+                error_message = error_detail.get("message", "未知错误")
+            else:
+                error_code = "UNKNOWN_ERROR"
+                error_message = str(error_detail)
+
+            st.error(f"**错误代码**: {error_code}\n\n**错误信息**: {error_message}")
+            return None
+
+    except requests.exceptions.ConnectionError:
+        st.error(
+            "**连接错误**: 无法连接到后端服务。请确保后端服务正在运行。\n\n"
+            f"后端地址: {BACKEND_URL}"
+        )
+        return None
+    except requests.exceptions.Timeout:
+        st.error("**超时错误**: 请求超时，请稍后重试。")
+        return None
+    except Exception as e:
+        st.error(f"**请求错误**: {str(e)}")
+        return None
+
+
+def call_sheet_image_api(
+    file_content: bytes,
+    file_name: str,
+    sheet_name: str,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+) -> Optional[dict]:
+    """
+    Call backend API to render sheet region as PNG image.
+
+    Args:
+        file_content: File content as bytes
+        file_name: File name
+        sheet_name: Sheet name
+        row_start: Start row index
+        row_end: End row index
+        col_start: Start column index
+        col_end: End column index
+
+    Returns:
+        Response JSON or None if error
+    """
+    try:
+        files = {"file": (file_name, file_content)}
+        params = {
+            "sheet_name": sheet_name,
+            "row_start": row_start,
+            "row_end": row_end,
+            "col_start": col_start,
+            "col_end": col_end,
+        }
+
+        response = requests.post(
+            f"{BACKEND_URL}/api/sheet_image",
+            files=files,
+            params=params,
+            timeout=60,
+        )
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            error_data = response.json()
+            error_detail = error_data.get("detail", {})
+            if isinstance(error_detail, dict):
+                error_code = error_detail.get("code", "UNKNOWN_ERROR")
+                error_message = error_detail.get("message", "未知错误")
+            else:
+                error_code = "UNKNOWN_ERROR"
+                error_message = str(error_detail)
+
+            st.error(f"**错误代码**: {error_code}\n\n**错误信息**: {error_message}")
+            return None
+
+    except requests.exceptions.ConnectionError:
+        st.error(
+            "**连接错误**: 无法连接到后端服务。请确保后端服务正在运行。\n\n"
+            f"后端地址: {BACKEND_URL}"
+        )
+        return None
+    except requests.exceptions.Timeout:
+        st.error("**超时错误**: 请求超时，请稍后重试。")
+        return None
+    except Exception as e:
+        st.error(f"**请求错误**: {str(e)}")
+        return None
+
+
 def main() -> None:
     """Main Streamlit application."""
+    # Page navigation
+    page = st.sidebar.selectbox(
+        "选择功能",
+        ["表头自动猜测", "Sheet 图片渲染"],
+    )
+
+    if page == "表头自动猜测":
+        render_header_detection_page()
+    else:
+        render_sheet_image_page()
+
+
+def render_header_detection_page() -> None:
+    """Render the header detection page."""
     st.title("📊 Excel/CSV 表头自动猜测工具")
+    
+    # Show warning that this feature is temporarily disabled
+    st.warning("⚠️ **功能暂时禁用**: 表头自动猜测功能正在调试中，暂时不可用。请使用 'Sheet 图片渲染' 功能。")
+    
     st.markdown(
         "上传 Excel 或 CSV 文件，自动检测表头行和数据起始行。"
         "支持格式: `.xlsx`, `.csv`, `.xlsb`"
@@ -184,32 +327,170 @@ def main() -> None:
         file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
         st.info(f"📄 **文件名**: {uploaded_file.name} | **大小**: {file_size_mb:.2f} MB")
 
-        # Analyze button
-        if st.button("🚀 开始分析", type="primary", use_container_width=True):
-            with st.spinner("正在分析文件，请稍候..."):
-                # Read file content
-                file_content = uploaded_file.getvalue()
-
-                # Call backend API
-                result = call_backend_api(
-                    file_content,
-                    uploaded_file.name,
-                    max_preview_rows=int(max_preview_rows),
-                    max_scan_rows=int(max_scan_rows),
-                )
-
-                if result:
-                    # Display file info
-                    st.success("✅ 分析完成！")
-                    st.markdown(f"**文件类型**: `{result['file_type']}`")
-                    st.markdown(f"**Sheet 数量**: {len(result['sheets'])}")
-
-                    # Display results for each sheet
-                    for sheet_result in result["sheets"]:
-                        display_sheet_result(sheet_result)
+        # Analyze button (disabled)
+        if st.button("🚀 开始分析", type="primary", use_container_width=True, disabled=True):
+            st.info("此功能暂时不可用，请使用 'Sheet 图片渲染' 功能。")
+        
+        # Show info about disabled feature
+        st.info("💡 **提示**: 表头自动猜测功能正在调试中。如需查看文件内容，请切换到 'Sheet 图片渲染' 页面。")
 
     else:
         st.info("👆 请上传一个文件开始分析")
+
+
+def render_sheet_image_page() -> None:
+    """Render the sheet image page."""
+    st.title("🖼️ Sheet 图片渲染")
+    st.markdown(
+        "上传 Excel 或 CSV 文件，将指定 sheet 区域渲染为 PNG 图片。"
+        "支持格式: `.xlsx`, `.csv`"
+    )
+
+    # File uploader
+    uploaded_file = st.file_uploader(
+        "上传 Excel/CSV 文件",
+        type=["xlsx", "csv"],
+        help="选择要渲染的文件",
+    )
+
+    if uploaded_file is not None:
+        # Display file info
+        file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
+        st.info(f"📄 **文件名**: {uploaded_file.name} | **大小**: {file_size_mb:.2f} MB")
+
+        # Get sheet list
+        file_content = uploaded_file.getvalue()
+        sheet_list_result = call_sheet_list_api(file_content, uploaded_file.name)
+
+        if sheet_list_result is None:
+            st.error("❌ 无法获取 Sheet 列表，请检查文件格式是否正确")
+            return
+
+        sheet_names = sheet_list_result.get("sheets", [])
+        if not sheet_names:
+            st.warning("⚠️ 文件中没有找到任何 Sheet")
+            return
+
+        # Input form
+        with st.form("sheet_image_form"):
+            st.subheader("📝 输入参数")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                # Use dropdown for sheet selection
+                default_sheet = sheet_names[0] if sheet_names else "__default__"
+                sheet_name = st.selectbox(
+                    "Sheet 名称",
+                    options=sheet_names,
+                    index=0,
+                    help="选择要渲染的 Sheet",
+                )
+
+            with col2:
+                st.markdown("")  # Spacer for alignment
+
+            st.subheader("📐 行列范围")
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                row_start = st.number_input(
+                    "起始行 (0-based)",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    help="0-based 起始行索引（包含）",
+                )
+
+            with col2:
+                row_end = st.number_input(
+                    "结束行 (0-based)",
+                    min_value=0,
+                    value=50,
+                    step=1,
+                    help="0-based 结束行索引（包含）",
+                )
+
+            with col3:
+                col_start = st.number_input(
+                    "起始列 (0-based)",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    help="0-based 起始列索引（包含）",
+                )
+
+            with col4:
+                col_end = st.number_input(
+                    "结束列 (0-based)",
+                    min_value=0,
+                    value=10,
+                    step=1,
+                    help="0-based 结束列索引（包含）",
+                )
+
+            submit_button = st.form_submit_button("🚀 渲染图片", type="primary", use_container_width=True)
+
+        if submit_button:
+            # Validate ranges
+            if row_end < row_start:
+                st.error("❌ 结束行必须 >= 起始行")
+                return
+
+            if col_end < col_start:
+                st.error("❌ 结束列必须 >= 起始列")
+                return
+
+            with st.spinner("正在渲染图片，请稍候..."):
+                # Read file content
+                file_content = uploaded_file.getvalue()
+
+                result = call_sheet_image_api(
+                    file_content=file_content,
+                    file_name=uploaded_file.name,
+                    sheet_name=sheet_name,
+                    row_start=int(row_start),
+                    row_end=int(row_end),
+                    col_start=int(col_start),
+                    col_end=int(col_end),
+                )
+
+            if result:
+                st.success("✅ 图片渲染完成！")
+
+                # Decode base64 image
+                try:
+                    image_base64 = result["image_base64"]
+                    image_bytes = base64.b64decode(image_base64)
+                    image = Image.open(io.BytesIO(image_bytes))
+
+                    # Display image
+                    st.subheader("🖼️ 渲染结果")
+                    st.image(image, use_container_width=True)
+
+                    # Display metadata
+                    st.subheader("📊 元信息")
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.markdown(f"**Sheet 名称**: `{result['sheet_name']}`")
+                        st.markdown(
+                            f"**行范围**: [{result['row_start']}, {result['row_end']}] "
+                            f"（用户视角: 第 {result['row_start'] + 1} 行到第 {result['row_end'] + 1} 行）"
+                        )
+                        st.markdown(
+                            f"**列范围**: [{result['col_start']}, {result['col_end']}] "
+                            f"（用户视角: 第 {result['col_start'] + 1} 列到第 {result['col_end'] + 1} 列）"
+                        )
+
+                    with col2:
+                        st.markdown(f"**行高**: {result['row_height_px']} 像素")
+                        st.markdown(f"**列宽**: {result['col_width_px']} 像素")
+                        st.markdown(f"**图片大小**: {image.width} x {image.height} 像素")
+
+                except Exception as e:
+                    st.error(f"❌ 解析图片时出错: {str(e)}")
 
 
 if __name__ == "__main__":
