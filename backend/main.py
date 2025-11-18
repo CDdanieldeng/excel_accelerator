@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, Tuple
 
 import uvicorn
+from typing import Any, List
+
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,6 +16,7 @@ from fastapi.responses import JSONResponse
 from backend import config
 from backend.logging_config import request_id_context, setup_logging, get_logger
 from backend.models.schemas import (
+    DataFrameResponse,
     ErrorDetail,
     ErrorResponse,
     GuessTableResponse,
@@ -22,6 +25,8 @@ from backend.models.schemas import (
 )
 from backend.services.file_loader import load_file_sample
 # from backend.services.table_detector import TableDetector  # Commented out for testing sheet image feature
+from backend.services.dataframe_builder import build_dataframe_from_header
+import pandas as pd
 from backend.services.table_renderer import (
     TableImageRenderer,
     UnsupportedFileTypeError,
@@ -631,6 +636,132 @@ async def get_sheet_image(
             detail={
                 "code": "INTERNAL_ERROR",
                 "message": "渲染图片时发生错误，请稍后重试。",
+            },
+        )
+    finally:
+        # Cleanup temporary file
+        if temp_file_path:
+            cleanup_temp_file(temp_file_path)
+
+
+@app.post("/api/build_dataframe", response_model=DataFrameResponse)
+async def build_dataframe_api(
+    request: Request,
+    file: UploadFile = File(...),
+    sheet_name: str = Query(..., description="Sheet name (use '__default__' for CSV)"),
+    header_row_number: int = Query(..., ge=1, description="Header row number (1-based)"),
+    max_preview_rows: int = Query(100, ge=1, le=1000, description="Maximum preview rows"),
+) -> DataFrameResponse:
+    """
+    Build pandas DataFrame from sheet data using specified header row.
+
+    Args:
+        request: FastAPI request object
+        file: Uploaded file
+        sheet_name: Name of the sheet
+        header_row_number: Header row number (1-based)
+        max_preview_rows: Maximum number of preview rows to return
+
+    Returns:
+        DataFrameResponse with dataset info and preview data
+
+    Raises:
+        HTTPException: If processing fails
+    """
+    request_logger = get_request_logger(request)
+    temp_file_path: Optional[str] = None
+
+    try:
+        # Read file content
+        file_content = await file.read()
+        file_name = file.filename or "unknown"
+
+        request_logger.info(
+            f"Build DataFrame request: file_name={file_name}, sheet_name={sheet_name}, "
+            f"header_row={header_row_number} (1-based)",
+            extra={
+                "stage": "build_dataframe",
+                "file_name": file_name,
+                "sheet_name": sheet_name,
+            },
+        )
+
+        # Validate and save uploaded file
+        file_type, temp_file_path = validate_uploaded_file(file, file_content, request_logger)
+
+        # Build DataFrame
+        request_logger.info(
+            f"Building DataFrame: {file_name}, sheet={sheet_name}, header_row={header_row_number}",
+            extra={"stage": "build_df", "file_name": file_name, "sheet_name": sheet_name},
+        )
+
+        dataset_id, df, preview_rows = build_dataframe_from_header(
+            file_path=temp_file_path,
+            sheet_name=sheet_name,
+            header_row_number=header_row_number,
+            max_preview_rows=max_preview_rows,
+        )
+
+        # Convert preview rows to list of lists (handle NaN values)
+        preview_data: List[List[Optional[Any]]] = []
+        for row in preview_rows:
+            preview_row: List[Optional[Any]] = []
+            for val in row:
+                if pd.isna(val):
+                    preview_row.append(None)
+                else:
+                    preview_row.append(val)
+            preview_data.append(preview_row)
+
+        request_logger.info(
+            f"DataFrame built successfully: dataset_id={dataset_id}, shape={df.shape}",
+            extra={"stage": "complete", "file_name": file_name, "sheet_name": sheet_name},
+        )
+
+        return DataFrameResponse(
+            dataset_id=dataset_id,
+            columns=df.columns.tolist(),
+            preview_rows=preview_data,
+            n_rows=len(df),
+            n_cols=len(df.columns),
+            file_name=file_name,
+            sheet_name=sheet_name,
+            header_row_number=header_row_number,
+        )
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        request_logger.warning(
+            f"Invalid request: {file.filename}, error={str(e)}",
+            extra={
+                "stage": "error",
+                "file_name": file.filename,
+                "sheet_name": sheet_name,
+            },
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_REQUEST",
+                "message": f"无效的请求: {str(e)}",
+            },
+        )
+
+    except Exception as e:
+        request_logger.exception(
+            f"Unexpected error building DataFrame: {file.filename}",
+            extra={
+                "stage": "error",
+                "file_name": file.filename,
+                "sheet_name": sheet_name,
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "构建 DataFrame 时发生错误，请稍后重试。",
             },
         )
     finally:

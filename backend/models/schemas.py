@@ -70,3 +70,16 @@ class SheetImageResponse(BaseModel):
     row_height_px: int = Field(..., description="Row height in pixels")
     col_width_px: int = Field(..., description="Column width in pixels")
 
+
+class DataFrameResponse(BaseModel):
+    """Response model for DataFrame building API."""
+
+    dataset_id: str = Field(..., description="Dataset identifier for future Chat with Data")
+    columns: List[str] = Field(..., description="Column names")
+    preview_rows: List[List[Optional[Any]]] = Field(..., description="Preview data rows (2D array)")
+    n_rows: int = Field(..., description="Total number of rows in DataFrame")
+    n_cols: int = Field(..., description="Total number of columns in DataFrame")
+    file_name: str = Field(..., description="Original file name")
+    sheet_name: str = Field(..., description="Sheet name")
+    header_row_number: int = Field(..., description="Header row number (1-based)")
+
