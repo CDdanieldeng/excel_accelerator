@@ -1,7 +1,19 @@
 """Configuration constants for the backend application."""
 
 import os
-from typing import Final
+from typing import Final, Optional
+from pathlib import Path
+
+# Try to load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"Loaded environment variables from {env_path}")
+except ImportError:
+    # python-dotenv not installed, skip
+    pass
 
 # File size limits
 MAX_FILE_SIZE_MB: Final[int] = int(os.getenv("MAX_FILE_SIZE_MB", "300"))
@@ -17,4 +29,8 @@ DEFAULT_MAX_PREVIEW_ROWS: Final[int] = int(os.getenv("MAX_PREVIEW_ROWS", "50"))
 
 # Logging
 LOG_LEVEL: Final[str] = os.getenv("LOG_LEVEL", "INFO")
+
+# LLM Configuration
+OPENAI_API_KEY: Final[Optional[str]] = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL: Final[str] = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 

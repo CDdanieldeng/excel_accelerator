@@ -40,6 +40,10 @@ def init_session_state():
         st.session_state.current_dataset_schema = None
     if "current_dataset_info" not in st.session_state:
         st.session_state.current_dataset_info = None
+    if "chat_session_id" not in st.session_state:
+        st.session_state.chat_session_id = None
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
 
 
 def call_sheet_list_api(
@@ -427,47 +431,189 @@ def render_preview_page():
             st.rerun()
 
 
+def call_chat_init_api(table_id: str) -> Optional[dict]:
+    """Call backend API to initialize chat session."""
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/chat/init",
+            json={"table_id": table_id},
+            timeout=30,
+        )
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            error_data = response.json()
+            error_detail = error_data.get("detail", {})
+            if isinstance(error_detail, dict):
+                error_code = error_detail.get("code", "UNKNOWN_ERROR")
+                error_message = error_detail.get("message", "未知错误")
+            else:
+                error_code = "UNKNOWN_ERROR"
+                error_message = str(error_detail)
+
+            st.error(f"**Error Code**: {error_code}\n\n**Error Message**: {error_message}")
+            return None
+
+    except requests.exceptions.ConnectionError:
+        st.error(
+            "**Connection Error**: Unable to connect to backend service. Please ensure the backend is running.\n\n"
+            f"Backend URL: {BACKEND_URL}"
+        )
+        return None
+    except requests.exceptions.Timeout:
+        st.error("**Timeout Error**: Request timed out. Please try again later.")
+        return None
+    except Exception as e:
+        st.error(f"**Request Error**: {str(e)}")
+        return None
+
+
+def call_chat_message_api(session_id: str, user_query: str) -> Optional[dict]:
+    """Call backend API to send chat message."""
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/chat/message",
+            json={"session_id": session_id, "user_query": user_query},
+            timeout=120,
+        )
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            error_data = response.json()
+            error_detail = error_data.get("detail", {})
+            if isinstance(error_detail, dict):
+                error_code = error_detail.get("code", "UNKNOWN_ERROR")
+                error_message = error_detail.get("message", "未知错误")
+            else:
+                error_code = "UNKNOWN_ERROR"
+                error_message = str(error_detail)
+
+            st.error(f"**Error Code**: {error_code}\n\n**Error Message**: {error_message}")
+            return None
+
+    except requests.exceptions.ConnectionError:
+        st.error(
+            "**Connection Error**: Unable to connect to backend service. Please ensure the backend is running.\n\n"
+            f"Backend URL: {BACKEND_URL}"
+        )
+        return None
+    except requests.exceptions.Timeout:
+        st.error("**Timeout Error**: Request timed out. Please try again later.")
+        return None
+    except Exception as e:
+        st.error(f"**Request Error**: {str(e)}")
+        return None
+
+
 def render_chat_page():
-    """Render Chat with Data page (placeholder)."""
+    """Render Chat with Data page."""
     st.title("💬 Chat with Data")
 
-    if st.session_state.current_dataset_info is None:
-        st.warning("⚠️ Dataset information not found. Please return to data preview.")
-        if st.button("⬅️ Back to Data Preview"):
+    # Check if we have a table_id (dataset_id)
+    table_id = st.session_state.current_dataset_id
+    if not table_id:
+        st.warning("⚠️ 请先在 Excel 页面选择主表并构建 DataFrame。")
+        if st.button("⬅️ 返回数据预览"):
             st.session_state.page = "preview"
             st.rerun()
         return
 
-    info = st.session_state.current_dataset_info
+    # Initialize chat session if needed
+    if not st.session_state.chat_session_id:
+        with st.spinner("正在初始化聊天会话..."):
+            result = call_chat_init_api(table_id)
+            if result:
+                st.session_state.chat_session_id = result["session_id"]
+                # Display table schema info
+                table_schema = result.get("table_schema", {})
+                columns = table_schema.get("columns", [])
+                st.success(f"✅ 聊天会话已初始化，当前表有 {len(columns)} 个列")
+                st.rerun()
+            else:
+                return
 
     # Display dataset info
-    st.subheader("📋 Current Dataset")
-    st.info(
-        f"**File Name**: `{info['file_name']}` | "
-        f"**Sheet**: `{info['sheet_name']}` | "
-        f"**Header Row**: Row {info['header_row_number']} | "
-        f"**Data Size**: {info['n_rows']:,} rows × {info['n_cols']} columns"
-    )
+    if st.session_state.current_dataset_info:
+        info = st.session_state.current_dataset_info
+        st.subheader("📋 当前数据集")
+        st.info(
+            f"**文件**: `{info['file_name']}` | "
+            f"**Sheet**: `{info['sheet_name']}` | "
+            f"**数据大小**: {info['n_rows']:,} 行 × {info['n_cols']} 列"
+        )
 
-    st.markdown(f"**Dataset ID**: `{st.session_state.current_dataset_id}`")
+    st.divider()
+
+    # Display chat history
+    st.subheader("💬 对话历史")
+    if st.session_state.chat_messages:
+        for msg in st.session_state.chat_messages:
+            role = msg.get("role", "user")
+            if role == "user":
+                with st.chat_message("user"):
+                    st.write(msg.get("question", ""))
+            else:
+                with st.chat_message("assistant"):
+                    # Thinking summary
+                    thinking_summary = msg.get("thinking_summary", [])
+                    if thinking_summary:
+                        st.markdown("**🤔 简化思考过程**")
+                        for i, step in enumerate(thinking_summary, 1):
+                            st.markdown(f"{step}")
+                        st.divider()
+
+                    # Final answer
+                    st.markdown("**✅ 最终答案**")
+                    final_text = msg.get("final_text", "")
+                    st.write(final_text)
+
+                    # Pandas code
+                    pandas_code = msg.get("pandas_code", "")
+                    if pandas_code and pandas_code != "# 闲聊请求，无需执行代码":
+                        st.markdown("**📝 生成的代码**")
+                        st.code(pandas_code, language="python")
+    else:
+        st.info("💡 开始提问吧！例如：\"筛选出销售额大于1000的记录\" 或 \"按地区统计销售额总和\"")
 
     st.divider()
 
-    # Placeholder content
-    st.subheader("🚧 Feature Placeholder")
-    st.markdown(
-        "This will integrate with LLM's Chat with Data functionality.\n\n"
-        f"Using dataset_id: `{st.session_state.current_dataset_id}` for queries and analysis."
-    )
+    # Chat input
+    user_query = st.chat_input("输入您的问题...")
+    if user_query:
+        # Add user message
+        st.session_state.chat_messages.append({
+            "role": "user",
+            "question": user_query,
+        })
 
-    st.info(
-        "💡 **Tip**: In the future, you can integrate LLM API here to enable natural language queries and analysis on the dataset."
-    )
+        # Call API
+        with st.spinner("正在处理您的问题..."):
+            result = call_chat_message_api(st.session_state.chat_session_id, user_query)
 
-    st.divider()
+        if result:
+            final_answer = result.get("final_answer", {})
+            thinking_summary = result.get("thinking_summary", [])
+
+            # Add assistant message
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "question": user_query,  # Keep for reference
+                "thinking_summary": thinking_summary,
+                "final_text": final_answer.get("text", ""),
+                "pandas_code": final_answer.get("pandas_code", ""),
+            })
+
+            st.rerun()
+        else:
+            # Remove the user message if API call failed
+            if st.session_state.chat_messages and st.session_state.chat_messages[-1].get("role") == "user":
+                st.session_state.chat_messages.pop()
 
     # Back button
-    if st.button("⬅️ Back to Data Preview", use_container_width=True):
+    st.divider()
+    if st.button("⬅️ 返回数据预览", use_container_width=True):
         st.session_state.page = "preview"
         st.rerun()
 

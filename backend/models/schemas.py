@@ -83,3 +83,59 @@ class DataFrameResponse(BaseModel):
     sheet_name: str = Field(..., description="Sheet name")
     header_row_number: int = Field(..., description="Header row number (1-based)")
 
+
+# Chat with Data schemas
+class ColumnInfo(BaseModel):
+    """Column information for table schema."""
+
+    name: str = Field(..., description="Column name")
+    dtype: str = Field(..., description="Data type (e.g., 'int64', 'object', 'float64')")
+    chinese_description: Optional[str] = Field(None, description="Chinese description of the column")
+    sample_values: List[Any] = Field(default_factory=list, description="Sample values from the column")
+    stats: Optional[Dict[str, Any]] = Field(None, description="Column statistics (min, max, n_unique, etc.)")
+
+
+class TableSchema(BaseModel):
+    """Table schema information."""
+
+    table_id: str = Field(..., description="Table identifier")
+    columns: List[ColumnInfo] = Field(..., description="List of column information")
+    n_rows: int = Field(..., description="Total number of rows")
+    n_cols: int = Field(..., description="Total number of columns")
+
+
+class ChatInitRequest(BaseModel):
+    """Request model for chat initialization."""
+
+    table_id: str = Field(..., description="Table identifier")
+    user_id: Optional[str] = Field(None, description="Optional user identifier")
+
+
+class ChatInitResponse(BaseModel):
+    """Response model for chat initialization."""
+
+    session_id: str = Field(..., description="Chat session identifier")
+    table_schema: TableSchema = Field(..., description="Table schema information")
+
+
+class ChatMessageRequest(BaseModel):
+    """Request model for chat message."""
+
+    session_id: str = Field(..., description="Chat session identifier")
+    user_query: str = Field(..., description="User query text")
+
+
+class FinalAnswer(BaseModel):
+    """Final answer structure."""
+
+    text: str = Field(..., description="Natural language summary and explanation")
+    pandas_code: str = Field(..., description="Complete pandas code string")
+
+
+class ChatMessageResponse(BaseModel):
+    """Response model for chat message."""
+
+    final_answer: FinalAnswer = Field(..., description="Final answer with text and code")
+    thinking_summary: List[str] = Field(..., description="Simplified thinking process steps")
+    debug: Optional[Dict[str, Any]] = Field(None, description="Debug information (plan_raw, etc.)")
+

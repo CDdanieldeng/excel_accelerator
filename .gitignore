@@ -48,3 +48,6 @@ excel_accel_*
 # Streamlit
 .streamlit/
 
+# env
+.env
+

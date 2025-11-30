@@ -34,6 +34,8 @@ from backend.services.table_renderer import (
     load_sheet_window,
 )
 from backend.utils.io_utils import cleanup_temp_file, get_file_size_mb, save_uploaded_file
+from backend.routers.chat_router import router as chat_router
+from backend.services.table_metadata_service import get_metadata_service
 
 # Setup logging
 setup_logging()
@@ -63,6 +65,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register routers
+app.include_router(chat_router)
 
 
 @app.middleware("http")
@@ -717,6 +722,25 @@ async def build_dataframe_api(
             f"DataFrame built successfully: dataset_id={dataset_id}, shape={df.shape}",
             extra={"stage": "complete", "file_name": file_name, "sheet_name": sheet_name},
         )
+
+        # Register table in metadata service for Chat with Data
+        try:
+            metadata_service = get_metadata_service()
+            metadata_service.register_table(
+                table_id=dataset_id,
+                df=df,
+                column_descriptions=None,  # Can be enhanced later with AI-generated descriptions
+            )
+            request_logger.info(
+                f"Table registered in metadata service: dataset_id={dataset_id}",
+                extra={"stage": "register_table", "file_name": file_name, "sheet_name": sheet_name},
+            )
+        except Exception as e:
+            request_logger.warning(
+                f"Failed to register table in metadata service: {e}",
+                extra={"stage": "register_table", "file_name": file_name, "sheet_name": sheet_name},
+            )
+            # Don't fail the request if registration fails
 
         return DataFrameResponse(
             dataset_id=dataset_id,
