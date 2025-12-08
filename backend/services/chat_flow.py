@@ -13,9 +13,9 @@ from backend.services.table_metadata_service import get_metadata_service
 
 logger = logging.getLogger(__name__)
 
-# Check OpenAI API key
-if not config.OPENAI_API_KEY:
-    logger.warning("OPENAI_API_KEY not set, LLM features will not work")
+# Check LLM API key
+if not config.LLM_API_KEY:
+    logger.warning("QWEN_API_KEY not set, LLM features will not work")
 
 
 class ChatState(TypedDict):
@@ -38,12 +38,13 @@ class ChatState(TypedDict):
 
 def create_llm(temperature: float = 0.0) -> ChatOpenAI:
     """Create LLM instance."""
-    if not config.OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY not set. Please set it in environment variable or .env file.")
+    if not config.LLM_API_KEY:
+        raise ValueError("QWEN_API_KEY not set. Please set it in environment variable or .env file.")
     return ChatOpenAI(
-        model=config.OPENAI_MODEL,
+        model=config.LLM_MODEL if config.LLM_MODEL else "qwen-turbo",
         temperature=temperature,
-        api_key=config.OPENAI_API_KEY,
+        api_key=config.LLM_API_KEY,
+        base_url=config.LLM_BASE_URL,
     )
 
 

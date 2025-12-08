@@ -107,3 +107,17 @@ class ChatMessageResponse(BaseModel):
     thinking_summary: List[str] = Field(..., description="Simplified thinking process steps")
     debug: Optional[Dict[str, Any]] = Field(None, description="Debug information (plan_raw, etc.)")
 
+
+# Chatbot service schemas (legacy/standalone chatbot)
+class ChatRequest(BaseModel):
+    """Request model for chatbot API (legacy)."""
+
+    message: str = Field(..., description="User message")
+    dataset_id: Optional[str] = Field(None, description="Optional dataset identifier")
+
+
+class ChatResponse(BaseModel):
+    """Response model for chatbot API (legacy)."""
+
+    response: str = Field(..., description="Chatbot response text")
+

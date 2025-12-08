@@ -88,9 +88,9 @@ Create a `.env` file in the project root:
 ```bash
 # LLM Configuration
 LLM_PROVIDER=qwen  # Options: "mock", "chatgpt", "qwen", "local"
-LLM_MODEL=your_model_name
-LLM_API_KEY=your_api_key
-LLM_BASE_URL=your_base_url  # Optional
+QWEN_MODEL=your_model_name
+QWEN_API_KEY=your_api_key
+QWEN_BASE_URL=your_base_url  # Optional
 
 # File processing limits
 MAX_FILE_SIZE_MB=300
@@ -347,17 +347,19 @@ The following environment variables can be configured:
 - `MAX_PREVIEW_ROWS`: Default maximum preview rows (default: 50)
 - `LOG_LEVEL`: Logging level (default: INFO)
 - `LLM_PROVIDER`: LLM provider (default: "qwen")
-- `LLM_MODEL`: LLM model name
-- `LLM_API_KEY`: LLM API key
-- `LLM_BASE_URL`: Custom LLM base URL (optional)
+- `QWEN_MODEL`: Qwen model name (read by config as LLM_MODEL)
+- `QWEN_API_KEY`: Qwen API key (read by config as LLM_API_KEY)
+- `QWEN_BASE_URL`: Custom Qwen base URL (optional, read by config as LLM_BASE_URL)
 
 Example:
 
 ```bash
 export MAX_FILE_SIZE_MB=500
 export LOG_LEVEL=DEBUG
-export LLM_PROVIDER=openai
-export LLM_API_KEY=your_key_here
+export LLM_PROVIDER=qwen
+export QWEN_MODEL=qwen-turbo
+export QWEN_API_KEY=your_key_here
+export QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1  # Optional
 uvicorn backend.main:app --reload
 ```
 

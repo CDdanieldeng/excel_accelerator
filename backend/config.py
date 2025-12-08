@@ -31,7 +31,7 @@ LOG_LEVEL: Final[str] = os.getenv("LOG_LEVEL", "INFO")
 
 # LLM Configuration
 LLM_PROVIDER: Final[str] = os.getenv("LLM_PROVIDER", "qwen")  # Options: "mock", "chatgpt", "qwen", "local"
-LLM_MODEL: Final[str] = os.getenv("LLM_MODEL", "")  # Model name (provider-specific)
-LLM_API_KEY: Final[Optional[str]] = os.getenv("LLM_API_KEY")  # API key (can be provider-specific)
-LLM_BASE_URL: Final[Optional[str]] = os.getenv("LLM_BASE_URL")  # Custom base URL (optional)
+LLM_MODEL: Final[str] = os.getenv("QWEN_MODEL", "")  # Model name (provider-specific, reads from QWEN_MODEL)
+LLM_API_KEY: Final[Optional[str]] = os.getenv("QWEN_API_KEY")  # API key (reads from QWEN_API_KEY)
+LLM_BASE_URL: Final[Optional[str]] = os.getenv("QWEN_BASE_URL")  # Custom base URL (optional, reads from QWEN_BASE_URL)
 
