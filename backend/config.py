@@ -7,7 +7,7 @@ from pathlib import Path
 # Try to load .env file if it exists
 try:
     from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent.parent / ".env"
+    env_path = Path(__file__).parent.parent / ".env"
     if env_path.exists():
         load_dotenv(env_path)
         print(f"Loaded environment variables from {env_path}")

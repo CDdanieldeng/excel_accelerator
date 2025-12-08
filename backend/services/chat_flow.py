@@ -8,7 +8,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
 from backend import config
-from backend.models.schemas import TableSchema
+from backend.models.schemas import DataFrameSummary
 from backend.services.table_metadata_service import get_metadata_service
 
 logger = logging.getLogger(__name__)
@@ -23,43 +23,77 @@ class ChatState(TypedDict):
 
     session_id: str
     table_id: str
-    table_schema: TableSchema
+    df_summary: DataFrameSummary  # Limited DataFrame info for LLM
     user_query: str
-    intent: Optional[Literal["data_analysis", "chitchat"]]
+    intent: Optional[Literal["data_analysis", "chitchat", "unclear"]]
+    intent_confidence: Optional[float]
+    unclear_reason: Optional[str]
+    clarification_question: Optional[str]
+    clarification_context: Optional[Dict[str, Any]]
+    awaiting_clarification: bool
     plan: Optional[Dict[str, Any]]
     bound_plan: Optional[Dict[str, Any]]
     pandas_code: Optional[str]
     short_explanation: Optional[str]
+    excel_thinking_steps: List[str]  # Excel-friendly chain of thought
     execution_result: Optional[Dict[str, Any]]
-    thinking_steps: List[str]
+    thinking_steps: List[str]  # Keep for backward compatibility
     final_answer: Optional[str]
     error: Optional[str]
+    retry_count: int
 
 
 def create_llm(temperature: float = 0.0) -> ChatOpenAI:
-    """Create LLM instance."""
+    """Create LLM instance for Qwen (using OpenAI-compatible API)."""
     if not config.LLM_API_KEY:
         raise ValueError("QWEN_API_KEY not set. Please set it in environment variable or .env file.")
+    
+    # Qwen uses OpenAI-compatible API, so we can use ChatOpenAI with custom base_url
+    # Default base URL for Qwen DashScope API
+    base_url = config.LLM_BASE_URL or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model = config.LLM_MODEL if config.LLM_MODEL else "qwen-turbo"
+    
     return ChatOpenAI(
-        model=config.LLM_MODEL if config.LLM_MODEL else "qwen-turbo",
+        model=model,
         temperature=temperature,
         api_key=config.LLM_API_KEY,
-        base_url=config.LLM_BASE_URL,
+        base_url=base_url,
     )
 
 
 def intent_classifier_node(state: ChatState) -> ChatState:
-    """Classify user intent: data analysis or chitchat."""
+    """Classify user intent: data analysis, chitchat, or unclear."""
     logger.info(f"Intent classification: query='{state['user_query']}'")
 
+    # Check if this is a follow-up to clarification
+    if state.get("awaiting_clarification", False):
+        # This is a response to clarification, treat as data_analysis
+        state["intent"] = "data_analysis"
+        state["awaiting_clarification"] = False
+        # Combine original query with clarification response
+        clarification_context = state.get("clarification_context", {})
+        original_query = clarification_context.get("original_query", "")
+        current_query = state["user_query"]
+        if original_query:
+            state["user_query"] = f"{original_query} ({current_query})"
+        logger.info("Handling clarification follow-up")
+        return state
+
     try:
+        df_summary = state.get("df_summary")
+        column_names = df_summary.column_names if df_summary else []
+
         llm = create_llm()
-        prompt = f"""你是一个意图分类器。判断用户的问题是数据分析问题还是闲聊。
+        prompt = f"""你是一个意图分类器。判断用户的问题是数据分析问题、闲聊，还是不够明确需要澄清。
 
 用户问题：{state['user_query']}
 
-如果是数据分析问题（如查询、筛选、统计、排序等），返回：{{"intent": "data_analysis"}}
-如果是闲聊（如问候、无关话题等），返回：{{"intent": "chitchat"}}
+可用的列名：{', '.join(column_names) if column_names else '未知'}
+
+分类规则：
+1. 如果是明确的数据分析问题（有具体的列名、操作、条件），返回：{{"intent": "data_analysis"}}
+2. 如果是闲聊（如问候、无关话题），返回：{{"intent": "chitchat"}}
+3. 如果问题不够明确（缺少列名、操作不清晰、条件模糊），返回：{{"intent": "unclear", "reason": "不明确的原因"}}
 
 只返回JSON，不要其他内容。"""
 
@@ -70,22 +104,27 @@ def intent_classifier_node(state: ChatState) -> ChatState:
         try:
             result = json.loads(content)
             intent = result.get("intent", "data_analysis")
+            unclear_reason = result.get("reason", "")
         except json.JSONDecodeError:
             # Fallback: check if it's clearly chitchat
             query_lower = state["user_query"].lower()
             chitchat_keywords = ["你好", "hello", "hi", "谢谢", "再见", "拜拜"]
             if any(keyword in query_lower for keyword in chitchat_keywords):
                 intent = "chitchat"
+                unclear_reason = None
             else:
                 intent = "data_analysis"
+                unclear_reason = None
 
         state["intent"] = intent
-        logger.info(f"Intent classified as: {intent}")
+        state["unclear_reason"] = unclear_reason if intent == "unclear" else None
+        logger.info(f"Intent classified as: {intent}, reason: {unclear_reason}")
 
     except Exception as e:
         logger.exception(f"Error in intent classification: {e}")
         # Default to data_analysis on error
         state["intent"] = "data_analysis"
+        state["unclear_reason"] = None
 
     return state
 
@@ -96,34 +135,120 @@ def chitchat_blocker_node(state: ChatState) -> ChatState:
     state["final_answer"] = "本应用不支持闲聊，只能帮助你分析表格数据。请提出数据分析相关的问题。"
     state["pandas_code"] = "# 闲聊请求，无需执行代码"
     state["thinking_steps"] = ["检测到闲聊请求，已拒绝"]
+    state["excel_thinking_steps"] = []
+    return state
+
+
+def clarification_node(state: ChatState) -> ChatState:
+    """Generate a concise clarification question for unclear queries."""
+    logger.info("Generating clarification question")
+
+    try:
+        df_summary = state["df_summary"]
+        user_query = state["user_query"]
+        unclear_reason = state.get("unclear_reason", "查询不够明确")
+
+        llm = create_llm()
+
+        # Build context for clarification
+        column_names = df_summary.column_names
+        example_row = df_summary.example_row
+
+        prompt = f"""用户的问题不够明确，需要澄清。生成一个简洁的澄清问题（1-2句话）。
+
+用户问题：{user_query}
+不明确的原因：{unclear_reason}
+
+可用的列名：{', '.join(column_names)}
+示例数据行：{json.dumps(example_row, ensure_ascii=False)}
+
+要求：
+1. 只问一个最关键的问题
+2. 如果涉及列名，列出可能的选项
+3. 保持简洁（最多2句话）
+4. 用友好的语气
+
+返回JSON格式：
+{{
+    "clarification_question": "澄清问题文本",
+    "clarification_type": "column|operation|value|filter"
+}}
+
+只返回JSON，不要其他内容。"""
+
+        response = llm.invoke(prompt)
+        content = response.content.strip()
+
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1]) if len(lines) > 2 else content
+
+        # Parse response
+        result = json.loads(content)
+        clarification_question = result.get("clarification_question", "请提供更多详细信息。")
+
+        state["clarification_question"] = clarification_question
+        state["final_answer"] = clarification_question
+        state["pandas_code"] = "# 需要澄清，暂未生成代码"
+        state["thinking_steps"] = ["检测到不明确的查询，请求澄清"]
+        state["excel_thinking_steps"] = []
+        state["awaiting_clarification"] = True
+
+        # Store context for follow-up
+        state["clarification_context"] = {
+            "original_query": user_query,
+            "unclear_reason": unclear_reason,
+            "available_columns": column_names,
+        }
+
+        logger.info(f"Clarification question generated: {clarification_question}")
+
+    except Exception as e:
+        logger.exception(f"Error generating clarification: {e}")
+        # Fallback clarification
+        state["clarification_question"] = "请提供更具体的问题，例如：要查询哪些列？使用什么筛选条件？"
+        state["final_answer"] = state["clarification_question"]
+        state["pandas_code"] = "# 需要澄清，暂未生成代码"
+        state["thinking_steps"] = ["请求澄清"]
+        state["excel_thinking_steps"] = []
+        state["awaiting_clarification"] = True
+        state["clarification_context"] = {
+            "original_query": user_query,
+            "unclear_reason": unclear_reason,
+            "available_columns": df_summary.column_names if "df_summary" in state else [],
+        }
+
     return state
 
 
 def planner_node(state: ChatState) -> ChatState:
-    """Generate analysis plan from user query and table schema."""
+    """Generate analysis plan from user query and DataFrame summary."""
     logger.info("Generating analysis plan")
 
     try:
-        # Build schema description
-        schema = state["table_schema"]
+        # Build schema description from DataFrameSummary (limited info)
+        df_summary = state["df_summary"]
         columns_info = []
-        for col in schema.columns:
-            col_desc = f"- {col.name} ({col.dtype})"
-            if col.chinese_description:
-                col_desc += f": {col.chinese_description}"
-            if col.stats:
-                stats_str = ", ".join([f"{k}={v}" for k, v in col.stats.items() if v is not None])
-                if stats_str:
-                    col_desc += f" [{stats_str}]"
+        for col_name in df_summary.column_names:
+            col_type = df_summary.column_types.get(col_name, "unknown")
+            example_value = df_summary.example_row.get(col_name, None)
+            col_desc = f"- {col_name} ({col_type})"
+            if example_value is not None:
+                col_desc += f" (示例值: {example_value})"
             columns_info.append(col_desc)
 
         schema_text = "\n".join(columns_info)
+        metadata = df_summary.metadata
+        metadata_text = f"总行数: {metadata.get('n_rows', '未知')}, 总列数: {metadata.get('n_cols', '未知')}"
 
         llm = create_llm()
         prompt = f"""你是一个数据分析计划生成器。根据用户问题和表结构，生成一个结构化的分析计划。
 
-表结构：
+表结构（仅包含列名、类型和示例值）：
 {schema_text}
+
+表基本信息：{metadata_text}
 
 用户问题：{state['user_query']}
 
@@ -173,8 +298,8 @@ def schema_resolver_node(state: ChatState) -> ChatState:
             state["error"] = "分析计划不存在"
             return state
 
-        schema = state["table_schema"]
-        column_names = [col.name for col in schema.columns]
+        df_summary = state["df_summary"]
+        column_names = df_summary.column_names
 
         # Simple matching: try to find column names that match the abstract names in plan
         bound_steps = []
@@ -221,8 +346,8 @@ def code_generator_node(state: ChatState) -> ChatState:
             state["error"] = "已绑定的分析计划不存在"
             return state
 
-        schema = state["table_schema"]
-        column_names = [col.name for col in schema.columns]
+        df_summary = state["df_summary"]
+        column_names = df_summary.column_names
 
         llm = create_llm()
         prompt = f"""你是一个pandas代码生成器。根据分析计划生成完整的pandas代码。
@@ -354,78 +479,156 @@ def executor_node(state: ChatState) -> ChatState:
     return state
 
 
+def excel_translator_node(state: ChatState) -> ChatState:
+    """Translate analysis plan steps to Excel-friendly language."""
+    logger.info("Translating steps to Excel-friendly language")
+
+    try:
+        bound_plan = state.get("bound_plan")
+        if not bound_plan:
+            # No plan to translate, skip
+            state["excel_thinking_steps"] = []
+            return state
+
+        steps = bound_plan.get("steps", [])
+        excel_steps = []
+
+        llm = create_llm()
+
+        # Translate each step
+        for i, step in enumerate(steps, 1):
+            operation = step.get("operation", "")
+            description = step.get("description", "")
+            params = step.get("params", {})
+
+            # Build prompt for Excel translation
+            prompt = f"""将以下数据分析步骤翻译成Excel用户能理解的语言。
+
+操作类型：{operation}
+操作描述：{description}
+操作参数：{json.dumps(params, ensure_ascii=False)}
+
+要求：
+1. 使用Excel术语（筛选、数据透视表、SUM函数、排序等）
+2. 避免使用技术术语（如pandas、DataFrame、groupby等）
+3. 用一句话描述，清晰简洁
+4. 如果涉及列名，直接使用列名
+
+示例：
+- filter → "筛选出[列名]满足[条件]的行（类似使用自动筛选功能）"
+- groupby + aggregate sum → "按[列名]分组，对[列名]求和（类似创建数据透视表）"
+- sort → "按[列名]排序（类似使用排序功能）"
+- select → "选择[列名]列"
+
+只返回翻译后的描述，不要其他内容。"""
+
+            response = llm.invoke(prompt)
+            excel_description = response.content.strip()
+
+            # Format as step
+            excel_steps.append(f"步骤{i}：{excel_description}")
+
+        state["excel_thinking_steps"] = excel_steps
+        logger.info(f"Translated {len(excel_steps)} steps to Excel language")
+
+    except Exception as e:
+        logger.exception(f"Error translating to Excel language: {e}")
+        # Fallback: use original descriptions
+        bound_plan = state.get("bound_plan", {})
+        steps = bound_plan.get("steps", [])
+        excel_steps = []
+        for i, step in enumerate(steps, 1):
+            desc = step.get("description", f"执行步骤{i}")
+            excel_steps.append(f"步骤{i}：{desc}")
+        state["excel_thinking_steps"] = excel_steps
+
+    return state
+
+
 def result_explainer_node(state: ChatState) -> ChatState:
-    """Generate natural language explanation of results."""
-    logger.info("Generating explanation")
+    """Generate natural language explanation using Excel terminology."""
+    logger.info("Generating Excel-friendly explanation")
 
     try:
         bound_plan = state.get("bound_plan")
         execution_result = state.get("execution_result")
         user_query = state["user_query"]
+        excel_steps = state.get("excel_thinking_steps", [])
 
         if not bound_plan or not execution_result:
             state["error"] = "缺少必要信息用于生成解释"
             return state
 
-        # Generate thinking steps
-        thinking_steps = []
-        for i, step in enumerate(bound_plan.get("steps", []), 1):
-            op = step.get("operation", "")
-            desc = step.get("description", "")
-            if desc:
-                thinking_steps.append(f"① {desc}")
-            elif op:
-                thinking_steps.append(f"① 执行{op}操作")
+        # Use Excel-friendly steps if available
+        if excel_steps:
+            state["thinking_steps"] = excel_steps
+        else:
+            # Fallback to original steps
+            thinking_steps = []
+            for i, step in enumerate(bound_plan.get("steps", []), 1):
+                desc = step.get("description", f"执行步骤{i}")
+                thinking_steps.append(f"步骤{i}：{desc}")
+            state["thinking_steps"] = thinking_steps
 
-        # Generate final answer
+        # Generate final answer using Excel terminology
         llm = create_llm()
-        prompt = f"""你是一个数据分析结果解释器。根据用户问题、分析计划和执行结果，生成面向Excel用户的自然语言解释。
+        prompt = f"""你是一个数据分析结果解释器。根据用户问题、分析步骤和执行结果，生成面向Excel用户的自然语言解释。
 
 用户问题：{user_query}
 
-分析计划：
-{json.dumps(bound_plan, ensure_ascii=False, indent=2)}
+分析步骤（已转换为Excel术语）：
+{chr(10).join(excel_steps) if excel_steps else '无'}
 
 执行结果摘要：
 {json.dumps(execution_result, ensure_ascii=False, indent=2)}
 
-生成一个简洁的自然语言回答，用Excel用户听得懂的话描述结果。不要输出JSON，直接输出回答文本。"""
+要求：
+1. 使用Excel用户熟悉的语言（避免pandas、SQL等技术术语）
+2. 可以类比Excel操作（如"类似数据透视表"、"类似SUM函数"等）
+3. 简洁明了，直接回答用户问题
+4. 如果结果是数字，直接给出数字和单位
+
+只返回回答文本，不要其他内容。"""
 
         response = llm.invoke(prompt)
         final_answer = response.content.strip()
 
-        state["thinking_steps"] = thinking_steps
         state["final_answer"] = final_answer
-        logger.info("Explanation generated")
+        logger.info("Excel-friendly explanation generated")
 
     except Exception as e:
-        logger.exception(f"Error in explanation generation: {e}")
-        # Fallback explanation
+        logger.exception(f"Error generating explanation: {e}")
+        # Fallback
         state["thinking_steps"] = ["执行数据分析", "生成结果"]
-        state["final_answer"] = f"根据您的问题，我已经完成了数据分析。结果摘要：{json.dumps(execution_result, ensure_ascii=False)}"
+        state["excel_thinking_steps"] = state.get("excel_thinking_steps", [])
+        state["final_answer"] = "根据您的问题，我已经完成了数据分析。"
 
     return state
 
 
-def should_continue(state: ChatState) -> Literal["chitchat", "data_analysis"]:
+def should_continue(state: ChatState) -> Literal["chitchat", "unclear", "data_analysis"]:
     """Determine next step based on intent."""
     intent = state.get("intent")
     if intent == "chitchat":
         return "chitchat"
+    elif intent == "unclear":
+        return "unclear"
     return "data_analysis"
 
 
 def create_chat_flow():
-    """Create the LangGraph flow for chat."""
+    """Create the LangGraph flow for chat with clarification and Excel translation."""
     workflow = StateGraph(ChatState)
 
     # Add nodes
     workflow.add_node("intent_classifier", intent_classifier_node)
     workflow.add_node("chitchat_blocker", chitchat_blocker_node)
+    workflow.add_node("clarification_handler", clarification_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("schema_resolver", schema_resolver_node)
     workflow.add_node("code_generator", code_generator_node)
     workflow.add_node("executor", executor_node)
+    workflow.add_node("excel_translator", excel_translator_node)
     workflow.add_node("result_explainer", result_explainer_node)
 
     # Set entry point
@@ -437,6 +640,7 @@ def create_chat_flow():
         should_continue,
         {
             "chitchat": "chitchat_blocker",
+            "unclear": "clarification_handler",
             "data_analysis": "planner",
         },
     )
@@ -445,10 +649,12 @@ def create_chat_flow():
     workflow.add_edge("planner", "schema_resolver")
     workflow.add_edge("schema_resolver", "code_generator")
     workflow.add_edge("code_generator", "executor")
-    workflow.add_edge("executor", "result_explainer")
+    workflow.add_edge("executor", "excel_translator")
+    workflow.add_edge("excel_translator", "result_explainer")
 
     # Add edges to end
     workflow.add_edge("chitchat_blocker", END)
+    workflow.add_edge("clarification_handler", END)
     workflow.add_edge("result_explainer", END)
 
     return workflow.compile()

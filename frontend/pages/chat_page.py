@@ -94,9 +94,13 @@ def render():
             "question": user_query,
         })
 
-        # Call API
+        # Call API (pass table_id for session recovery if needed)
         with st.spinner("正在处理您的问题..."):
-            result = call_chat_message_api(st.session_state.chat_session_id, user_query)
+            result = call_chat_message_api(
+                st.session_state.chat_session_id, 
+                user_query,
+                table_id=st.session_state.current_dataset_id
+            )
 
         if result:
             final_answer = result.get("final_answer", {})

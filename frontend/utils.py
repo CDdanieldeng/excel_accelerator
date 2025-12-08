@@ -223,12 +223,22 @@ def call_chat_init_api(table_id: str) -> Optional[dict]:
         return None
 
 
-def call_chat_message_api(session_id: str, user_query: str) -> Optional[dict]:
-    """Call backend API to send chat message."""
+def call_chat_message_api(session_id: str, user_query: str, table_id: Optional[str] = None) -> Optional[dict]:
+    """Call backend API to send chat message.
+    
+    Args:
+        session_id: Chat session identifier
+        user_query: User query text
+        table_id: Optional table_id for session recovery if session is lost
+    """
     try:
+        payload = {"session_id": session_id, "user_query": user_query}
+        if table_id:
+            payload["table_id"] = table_id
+        
         response = requests.post(
             f"{BACKEND_URL}/chat/message",
-            json={"session_id": session_id, "user_query": user_query},
+            json=payload,
             timeout=120,
         )
 

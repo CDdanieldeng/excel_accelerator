@@ -72,6 +72,16 @@ class TableSchema(BaseModel):
     n_cols: int = Field(..., description="Total number of columns")
 
 
+class DataFrameSummary(BaseModel):
+    """Minimal DataFrame information exposed to LLM (privacy-safe)."""
+
+    table_id: str = Field(..., description="Table identifier")
+    column_names: List[str] = Field(..., description="List of column names")
+    column_types: Dict[str, str] = Field(..., description="Column name to data type mapping")
+    example_row: Dict[str, Any] = Field(..., description="One example row as dictionary")
+    metadata: Dict[str, Any] = Field(..., description="Basic metadata (n_rows, n_cols, etc.)")
+
+
 class ChatInitRequest(BaseModel):
     """Request model for chat initialization."""
 
@@ -91,6 +101,7 @@ class ChatMessageRequest(BaseModel):
 
     session_id: str = Field(..., description="Chat session identifier")
     user_query: str = Field(..., description="User query text")
+    table_id: Optional[str] = Field(None, description="Optional table_id for session recovery if session is lost")
 
 
 class FinalAnswer(BaseModel):

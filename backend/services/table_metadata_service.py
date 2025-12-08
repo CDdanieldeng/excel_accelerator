@@ -1,4 +1,16 @@
-"""Service for managing table metadata (schema, statistics, etc.)."""
+"""Service for managing table metadata (schema, statistics, etc.).
+
+Current Implementation:
+- In-memory storage for both metadata and DataFrames
+- Data is lost on backend restart
+- Suitable for development and single-instance deployments
+
+Future Extension:
+- Can be extended to support data lake (S3, HDFS, etc.)
+- Can use database for metadata storage
+- Can use object storage for DataFrame persistence (Parquet, etc.)
+- Architecture allows swapping storage backend without changing API
+"""
 
 import logging
 from typing import Dict, List, Optional, Any
@@ -10,13 +22,25 @@ logger = logging.getLogger(__name__)
 
 
 class TableMetadataService:
-    """Service for storing and retrieving table metadata."""
+    """Service for storing and retrieving table metadata.
+    
+    Current implementation uses in-memory storage.
+    Can be extended to support data lake or persistent storage in the future.
+    """
 
     def __init__(self):
-        """Initialize the metadata service with in-memory storage."""
+        """Initialize the metadata service with in-memory storage.
+        
+        TODO: Extend to support:
+        - Persistent storage (database for metadata, object storage for DataFrames)
+        - Data lake integration (S3, HDFS, etc.)
+        - Distributed storage for multi-instance deployments
+        """
         # In-memory storage: table_id -> TableSchema
+        # TODO: Replace with database or persistent storage
         self._tables: Dict[str, TableSchema] = {}
         # In-memory storage: table_id -> DataFrame (for execution)
+        # TODO: Replace with object storage (Parquet files in S3, etc.)
         self._dataframes: Dict[str, pd.DataFrame] = {}
 
     def register_table(
