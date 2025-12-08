@@ -31,6 +31,8 @@ DEFAULT_MAX_PREVIEW_ROWS: Final[int] = int(os.getenv("MAX_PREVIEW_ROWS", "50"))
 LOG_LEVEL: Final[str] = os.getenv("LOG_LEVEL", "INFO")
 
 # LLM Configuration
-OPENAI_API_KEY: Final[Optional[str]] = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL: Final[str] = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+LLM_PROVIDER: Final[str] = os.getenv("LLM_PROVIDER", "qwen")  # Options: "mock", "chatgpt", "qwen", "local"
+LLM_MODEL: Final[str] = os.getenv("LLM_MODEL", "")  # Model name (provider-specific)
+LLM_API_KEY: Final[Optional[str]] = os.getenv("LLM_API_KEY")  # API key (can be provider-specific)
+LLM_BASE_URL: Final[Optional[str]] = os.getenv("LLM_BASE_URL")  # Custom base URL (optional)
 
