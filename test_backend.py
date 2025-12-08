@@ -50,7 +50,7 @@ def main():
         print("\n⚠️  后端服务可能未运行，请先启动后端:")
         print("   python run_backend.py")
         print("   或")
-        print("   uvicorn backend.main:app --reload")
+        print("   uvicorn backend.table_render_main:app --reload")
         sys.exit(1)
 
     print("\n✅ 健康检查通过")

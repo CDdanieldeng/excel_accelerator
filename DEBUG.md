@@ -47,13 +47,13 @@ python run_backend.py
 #### 方式 2: 使用 uvicorn 命令
 
 ```bash
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn backend.table_render_main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-#### 方式 3: 直接运行 main.py
+#### 方式 3: 直接运行 table_render_main.py
 
 ```bash
-python -m backend.main
+python -m backend.table_render_main
 ```
 
 ### 3. 验证服务运行
@@ -183,7 +183,7 @@ for sample in samples:
 lsof -i :8000
 
 # 或使用其他端口
-uvicorn backend.main:app --port 8001
+uvicorn backend.table_render_main:app --port 8001
 ```
 
 #### 问题: 导入错误

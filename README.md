@@ -22,7 +22,7 @@ A Python-based tool for automatically detecting table headers and data regions i
 excel_accelerator/
 ├── backend/                 # FastAPI backend
 │   ├── __init__.py
-│   ├── main.py             # Main FastAPI application (port 8000)
+│   ├── table_render_main.py # Table rendering and DataFrame API (port 8000)
 │   ├── chatbot_main.py     # Chatbot service (port 8001)
 │   ├── config.py           # Configuration constants
 │   ├── logging_config.py   # Logging configuration
@@ -112,10 +112,10 @@ The main backend provides file processing and chat functionality:
 python run_backend.py
 
 # Option 2: Using uvicorn directly
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn backend.table_render_main:app --host 0.0.0.0 --port 8000 --reload
 
 # Option 3: Using Python module
-python -m backend.main
+python -m backend.table_render_main
 ```
 
 The backend service will start at `http://localhost:8000`.
@@ -360,7 +360,7 @@ export LLM_PROVIDER=qwen
 export QWEN_MODEL=qwen-turbo
 export QWEN_API_KEY=your_key_here
 export QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1  # Optional
-uvicorn backend.main:app --reload
+uvicorn backend.table_render_main:app --reload
 ```
 
 ## Table Header Detection

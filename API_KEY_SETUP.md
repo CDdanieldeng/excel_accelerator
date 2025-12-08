@@ -50,10 +50,10 @@ set OPENAI_API_KEY=sk-your-actual-api-key-here
 
 ```bash
 # Linux/macOS
-OPENAI_API_KEY=sk-your-actual-api-key-here uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+OPENAI_API_KEY=sk-your-actual-api-key-here uvicorn backend.table_render_main:app --host 0.0.0.0 --port 8000 --reload
 
 # Windows PowerShell
-$env:OPENAI_API_KEY="sk-your-actual-api-key-here"; uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+$env:OPENAI_API_KEY="sk-your-actual-api-key-here"; uvicorn backend.table_render_main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## 获取 OpenAI API Key

@@ -22,7 +22,7 @@ pip install -r requirements.txt
 python run_backend.py
 
 # 方式 2: 使用 uvicorn
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn backend.table_render_main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 后端启动后，你应该看到：
@@ -129,7 +129,7 @@ python test_sheet_image.py
 
 **示例日志输出：**
 ```
-2024-01-01 10:00:00 | INFO     | backend.main | [request_id=abc123] | Sheet image request: file_path=/path/to/test.xlsx, sheet_name=Sheet1, rows=[0, 10], cols=[0, 5]
+2024-01-01 10:00:00 | INFO     | backend.table_render_main | [request_id=abc123] | Sheet image request: file_path=/path/to/test.xlsx, sheet_name=Sheet1, rows=[0, 10], cols=[0, 5]
 2024-01-01 10:00:00 | INFO     | backend.services.table_renderer | [request_id=abc123] | Loading sheet window: file=/path/to/test.xlsx, sheet=Sheet1, rows=[0, 10], cols=[0, 5]
 2024-01-01 10:00:01 | INFO     | backend.services.table_renderer | [request_id=abc123] | Loaded XLSX window: 11 rows, 6 columns
 2024-01-01 10:00:01 | INFO     | backend.services.table_renderer | [request_id=abc123] | Rendering grid: 11 rows x 6 cols, image size: 630x264 pixels

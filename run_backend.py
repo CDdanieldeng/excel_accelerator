@@ -22,7 +22,7 @@ if __name__ == "__main__":
     print()
 
     uvicorn.run(
-        "backend.main:app",
+        "backend.table_render_main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,  # 开发模式：代码变更自动重载
