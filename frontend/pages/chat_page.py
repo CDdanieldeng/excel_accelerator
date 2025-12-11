@@ -10,7 +10,7 @@ if str(project_root) not in sys.path:
 
 import streamlit as st
 
-from frontend.utils import call_chat_init_api, call_chat_message_api
+from frontend.utils import call_chat_init_api, call_chat_message_api, stream_chat_message_api
 
 
 def render():
@@ -94,32 +94,106 @@ def render():
             "question": user_query,
         })
 
-        # Call API (pass table_id for session recovery if needed)
-        with st.spinner("正在处理您的问题..."):
-            result = call_chat_message_api(
-                st.session_state.chat_session_id, 
-                user_query,
-                table_id=st.session_state.current_dataset_id
-            )
-
-        if result:
-            final_answer = result.get("final_answer", {})
-            thinking_summary = result.get("thinking_summary", [])
-
-            # Add assistant message
-            st.session_state.chat_messages.append({
-                "role": "assistant",
-                "question": user_query,  # Keep for reference
-                "thinking_summary": thinking_summary,
-                "final_text": final_answer.get("text", ""),
-                "pandas_code": final_answer.get("pandas_code", ""),
-            })
-
-            st.rerun()
-        else:
-            # Remove the user message if API call failed
-            if st.session_state.chat_messages and st.session_state.chat_messages[-1].get("role") == "user":
-                st.session_state.chat_messages.pop()
+        # Create placeholder for streaming response
+        with st.chat_message("assistant"):
+            thinking_container = st.empty()
+            final_answer_container = st.empty()
+            code_container = st.empty()
+            
+            # Initialize variables
+            thinking_steps = []
+            seen_steps = set()  # Track steps we've already displayed
+            final_answer_text = ""
+            pandas_code = ""
+            thinking_summary = []
+            error_occurred = False
+            
+            # Stream the response
+            try:
+                for event in stream_chat_message_api(
+                    st.session_state.chat_session_id, 
+                    user_query,
+                    table_id=st.session_state.current_dataset_id
+                ):
+                    event_type = event.get("type")
+                    
+                    if event_type == "thinking":
+                        # Get step and message
+                        step = event.get("step", "")
+                        message = event.get("message", step)
+                        
+                        # Create a unique key for this step (use step name + message to avoid duplicates)
+                        step_key = f"{step}:{message}"
+                        
+                        # Only add if we haven't seen this exact step+message combination
+                        if step_key not in seen_steps and step:
+                            seen_steps.add(step_key)
+                            thinking_steps.append({
+                                "step": step,
+                                "message": message,
+                            })
+                            
+                            # Update thinking display - show all accumulated steps (only new ones are added)
+                            thinking_html = "**🤔 思考过程**\n\n"
+                            for i, ts in enumerate(thinking_steps, 1):
+                                # Show last step as processing, others as completed
+                                status_icon = "⏳" if i == len(thinking_steps) else "✅"
+                                thinking_html += f"{status_icon} {ts['message']}\n\n"
+                            
+                            # Update the container (this replaces the content, not appends)
+                            thinking_container.markdown(thinking_html)
+                    
+                    elif event_type == "complete":
+                        # Final response received
+                        final_answer = event.get("final_answer", {})
+                        final_answer_text = final_answer.get("text", "")
+                        pandas_code = final_answer.get("pandas_code", "")
+                        thinking_summary = event.get("thinking_summary", [])
+                        
+                        # Update final answer display
+                        final_answer_container.markdown("**✅ 最终答案**")
+                        final_answer_container.write(final_answer_text)
+                        
+                        # Update code display
+                        if pandas_code and pandas_code != "# 闲聊请求，无需执行代码":
+                            code_container.markdown("**📝 生成的代码**")
+                            code_container.code(pandas_code, language="python")
+                    
+                    elif event_type == "error":
+                        # Error occurred
+                        error_info = event.get("error", {})
+                        error_code = error_info.get("code", "UNKNOWN_ERROR")
+                        error_message = error_info.get("message", "未知错误")
+                        st.error(f"**错误代码**: {error_code}\n\n**错误信息**: {error_message}")
+                        error_occurred = True
+                        break
+                
+                # If streaming completed successfully, save to chat history
+                if not error_occurred:
+                    # Use thinking_summary from final event if available, otherwise use collected steps
+                    final_thinking_summary = thinking_summary if thinking_summary else [ts["message"] for ts in thinking_steps]
+                    
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "question": user_query,
+                        "thinking_summary": final_thinking_summary,
+                        "final_text": final_answer_text,
+                        "pandas_code": pandas_code,
+                    })
+                    
+                    st.rerun()
+                else:
+                    # Remove the user message if error occurred
+                    if st.session_state.chat_messages and st.session_state.chat_messages[-1].get("role") == "user":
+                        st.session_state.chat_messages.pop()
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"**处理错误**: {str(e)}")
+                # Remove the user message if exception occurred
+                if st.session_state.chat_messages and st.session_state.chat_messages[-1].get("role") == "user":
+                    st.session_state.chat_messages.pop()
+                st.rerun()
 
     # Back button
     st.divider()

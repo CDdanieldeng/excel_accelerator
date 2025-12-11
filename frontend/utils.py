@@ -270,3 +270,91 @@ def call_chat_message_api(session_id: str, user_query: str, table_id: Optional[s
         st.error(f"**Request Error**: {str(e)}")
         return None
 
+
+def stream_chat_message_api(session_id: str, user_query: str, table_id: Optional[str] = None):
+    """Stream chat message processing with Server-Sent Events.
+    
+    Args:
+        session_id: Chat session identifier
+        user_query: User query text
+        table_id: Optional table_id for session recovery if session is lost
+        
+    Yields:
+        dict: Stream events with type 'thinking', 'complete', or 'error'
+    """
+    import json
+    
+    try:
+        payload = {"session_id": session_id, "user_query": user_query}
+        if table_id:
+            payload["table_id"] = table_id
+        
+        response = requests.post(
+            f"{BACKEND_URL}/chat/message/stream",
+            json=payload,
+            stream=True,
+            timeout=120,
+        )
+
+        if response.status_code != 200:
+            error_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            error_detail = error_data.get("detail", {})
+            if isinstance(error_detail, dict):
+                error_code = error_detail.get("code", "UNKNOWN_ERROR")
+                error_message = error_detail.get("message", "未知错误")
+            else:
+                error_code = "UNKNOWN_ERROR"
+                error_message = str(error_detail) or "未知错误"
+            
+            yield {
+                "type": "error",
+                "error": {
+                    "code": error_code,
+                    "message": error_message,
+                }
+            }
+            return
+
+        # Parse Server-Sent Events
+        buffer = ""
+        for chunk in response.iter_content(chunk_size=None):
+            if chunk:
+                buffer += chunk.decode('utf-8')
+                
+                # Process complete SSE messages (lines ending with \n\n)
+                while "\n\n" in buffer:
+                    line, buffer = buffer.split("\n\n", 1)
+                    
+                    if line.startswith("data: "):
+                        data_str = line[6:]  # Remove "data: " prefix
+                        try:
+                            event_data = json.loads(data_str)
+                            yield event_data
+                        except json.JSONDecodeError:
+                            continue
+
+    except requests.exceptions.ConnectionError:
+        yield {
+            "type": "error",
+            "error": {
+                "code": "CONNECTION_ERROR",
+                "message": f"无法连接到后端服务。请确保后端正在运行。\n\n后端 URL: {BACKEND_URL}",
+            }
+        }
+    except requests.exceptions.Timeout:
+        yield {
+            "type": "error",
+            "error": {
+                "code": "TIMEOUT_ERROR",
+                "message": "请求超时，请稍后重试。",
+            }
+        }
+    except Exception as e:
+        yield {
+            "type": "error",
+            "error": {
+                "code": "REQUEST_ERROR",
+                "message": f"请求错误: {str(e)}",
+            }
+        }
+
